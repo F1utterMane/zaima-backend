@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -127,6 +128,7 @@ func Load(path string) {
 
 	// 【安全】支持环境变量覆盖敏感配置 (如 ZAIMA_JWT_SECRET, ZAIMA_DATABASE_PASSWORD)
 	viper.SetEnvPrefix("ZAIMA")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {

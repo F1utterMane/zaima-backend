@@ -4,7 +4,7 @@
 # =============================================================
 
 # --- 阶段 1: 编译 ---
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
@@ -17,16 +17,20 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/zaima-server ./cmd/api
 
 # --- 阶段 2: 运行 ---
-FROM alpine:3.19
+FROM alpine:3.21
 
 RUN apk --no-cache add ca-certificates tzdata && \
     cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone
 
+# 【安全】以非 root 用户运行
+RUN adduser -D -u 1000 appuser
+USER appuser
+
 WORKDIR /app
-COPY --from=builder /app/zaima-server .
-COPY --from=builder /app/configs ./configs
+COPY --from=builder --chown=appuser:appuser /app/zaima-server .
+COPY --from=builder --chown=appuser:appuser /app/configs ./configs
 
 EXPOSE 8080
 
-CMD ["./zaima-server", "-config", "configs/config.yaml"]
+CMD ["./zaima-server", "-config", "configs/config.docker.yaml"]
