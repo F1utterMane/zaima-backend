@@ -40,7 +40,21 @@
     "device_id": "xxx"   // 可选，设备标识，用于老人端异常设备登录告警
   }
   ```
-- **Response**: 成功提取 `token`。后续所有需鉴权的接口请在 HTTP Header 中加入：`Authorization: Bearer <token>`。
+- **Response**: 返回成功会提取 `token`。格式如下：
+  ```json
+  {
+    "code": 0,
+    "message": "success",
+    "data": {
+      "is_new": true,
+      "role": 1,
+      "token": "eyJhbGciOiJIUzI1NiIs...",
+      "user_id": 12,
+      "nickname": "用户12"
+    }
+  }
+  ```
+  后续所有需鉴权的接口请在 HTTP Header 中加入：`Authorization: Bearer <token>`。
 
 ---
 
@@ -60,7 +74,7 @@
   ```json
   {
     "nickname": "张大爷", // 必须<=8字
-    "avatar_url": "https://oss...",
+    "avatar_url": "https://zaima.oss.aliyuncs.com/avatar.jpg", // ⚠️ 必须为合法的 HTTPS OSS 链接
     "city": "武汉",
     "province": "湖北"
   }
@@ -138,7 +152,7 @@
 - **Body**:
   ```json
   {
-    "voice_url": "https://oss/voice.mp3",
+    "voice_url": "https://zaima.oss.aliyuncs.com/voice.mp3", // ⚠️ 必须为合法的 HTTPS OSS 链接
     "interest_tag": "打门球",
     "province": "湖北省",
     "city": "武汉市",
@@ -178,9 +192,12 @@
 - **说明**: 返回贴合当前时间段和天气的短句及 Icon，用于聊天列表置顶展示。
 
 ### 5.3 获取新闻列表
-- **URL**: `/news?city=武汉&tab=latest&keyword=搜索词`
+- **URL**: `/news?city=武汉&tab=latest&keyword=搜索词&page=1&page_size=10`
 - **Method**: `GET`
-- **说明**: 支持热点 (hot)/最新 (latest) 切换，并支持模糊匹配搜索。
+- **说明**: 
+  - 支持热点 (hot)/最新 (latest)/全部 (all) 切换。
+  - 支持关键字 (`keyword`) 模糊匹配搜索。
+  - 支持页码 (`page`) 和每页数量 (`page_size`) 分页。
 
 ---
 
@@ -207,5 +224,5 @@
 - **URL**: `/chat/stt`
 - **Method**: `POST`
 - **Body Header**: `Content-Type: application/x-www-form-urlencoded`
-  - `voice_url=xxx`
-- **说明**: 用于长辈滑动手势录音转为文字后发送。
+  - `voice_url=https://zaima.oss.aliyuncs.com/voice.mp3` // ⚠️ 必须为合法的 HTTPS OSS 链接
+- **说明**: 用于长辈滑动手势录音上传到 OSS 后，提交给服务端识别为文字后发送。

@@ -80,7 +80,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 # 响应
 # {
 #   "code": 0,
-#   "data": { "is_new": true, "role": 2, "token": "eyJhb....", "user_id": 1 },
+#   "data": { "is_new": true, "role": 2, "token": "eyJhb....", "user_id": 1, "nickname": "用户_8391" },
 #   "message": "success"
 # }
 ```
