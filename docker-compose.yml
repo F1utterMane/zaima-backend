@@ -1,0 +1,56 @@
+# =============================================================
+# Docker Compose: "在吗" APP 后端本地开发环境
+# 一键拉起：PostgreSQL + Redis + Go 后端服务
+# =============================================================
+
+services:
+  # ---- PostgreSQL 数据库 ----
+  postgres:
+    image: postgres:15-alpine
+    container_name: zaima-postgres
+    environment:
+      POSTGRES_USER: zaima
+      POSTGRES_PASSWORD: zaima_dev_2026
+      POSTGRES_DB: zaima
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zaima"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- Redis 缓存 ----
+  redis:
+    image: redis:7-alpine
+    container_name: zaima-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- Go 后端服务 ----
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zaima-api
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 覆盖配置中的数据库和 Redis 地址为 Docker 内部网络
+      DATABASE_HOST: postgres
+      REDIS_ADDR: redis:6379
+
+volumes:
+  pgdata:

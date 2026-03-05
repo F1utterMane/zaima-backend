@@ -1,0 +1,303 @@
+// Package handler - 聊天相关 API (REST 部分): 会话列表、历史消息、AI回复、STT。
+package handler
+
+import (
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+
+	"zaima-backend/internal/model"
+	"zaima-backend/internal/pkg/database"
+	"zaima-backend/internal/pkg/response"
+)
+
+// ==================== 响应体定义 ====================
+
+// ChatSession 会话列表项。
+type ChatSession struct {
+	PeerID      uint64 `json:"peer_id"`       // 对方用户 ID
+	PeerName    string `json:"peer_name"`     // 对方昵称
+	PeerAvatar  string `json:"peer_avatar"`   // 对方头像
+	LastMessage string `json:"last_message"`  // 最后一条消息内容
+	LastMsgType string `json:"last_msg_type"` // 最后一条消息类型
+	LastTime    string `json:"last_time"`     // 最后消息时间
+	UnreadCount int64  `json:"unread_count"`  // 未读消息数
+}
+
+// ==================== Handler ====================
+
+// GetChatSessions 获取聊天会话列表 (首屏)。
+// GET /api/v1/chat/sessions?keyword=xxx
+//
+// 聚合返回：系统消息、关心消息、最近聊天用户列表、最后一条消息及未读数。
+func GetChatSessions(c *gin.Context) {
+	userID := c.GetUint64("user_id")
+	keyword := c.Query("keyword")
+
+	// 1. 查找与当前用户相关的所有最近聊天对象 (去重取最新一条)
+	type peerInfo struct {
+		PeerID uint64
+	}
+
+	// 找到所有聊过天的对方 ID
+	var sentPeers, recvPeers []peerInfo
+	database.DB.Model(&model.ChatMessage{}).
+		Select("DISTINCT receiver_id as peer_id").
+		Where("sender_id = ?", userID).
+		Scan(&sentPeers)
+	database.DB.Model(&model.ChatMessage{}).
+		Select("DISTINCT sender_id as peer_id").
+		Where("receiver_id = ?", userID).
+		Scan(&recvPeers)
+
+	// 合并去重
+	peerSet := map[uint64]bool{}
+	for _, p := range sentPeers {
+		peerSet[p.PeerID] = true
+	}
+	for _, p := range recvPeers {
+		peerSet[p.PeerID] = true
+	}
+
+	// 【修复 N+1 查询】批量查询所有 Peer 用户信息，缓存在 map 中
+	peerIDs := make([]uint64, 0, len(peerSet))
+	for pid := range peerSet {
+		peerIDs = append(peerIDs, pid)
+	}
+	var peerUsers []model.User
+	if len(peerIDs) > 0 {
+		database.DB.Where("id IN ?", peerIDs).Find(&peerUsers)
+	}
+	peerMap := make(map[uint64]model.User, len(peerUsers))
+	for _, u := range peerUsers {
+		peerMap[u.ID] = u
+	}
+
+	var sessions []ChatSession
+	for peerID := range peerSet {
+		peer, exists := peerMap[peerID]
+		if !exists {
+			continue
+		}
+
+		// 关键字过滤 (按昵称搜索)
+		if keyword != "" && !containsKeyword(peer.Nickname, keyword) {
+			continue
+		}
+
+		// 获取最后一条消息
+		var lastMsg model.ChatMessage
+		database.DB.Where(
+			"(sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)",
+			userID, peerID, peerID, userID,
+		).Order("created_at DESC").First(&lastMsg)
+
+		// 统计未读消息数
+		var unreadCount int64
+		database.DB.Model(&model.ChatMessage{}).
+			Where("sender_id = ? AND receiver_id = ? AND is_read = false", peerID, userID).
+			Count(&unreadCount)
+
+		sessions = append(sessions, ChatSession{
+			PeerID:      peer.ID,
+			PeerName:    peer.Nickname,
+			PeerAvatar:  peer.AvatarURL,
+			LastMessage: lastMsg.Content,
+			LastMsgType: lastMsg.MsgType,
+			LastTime:    lastMsg.CreatedAt.Format("2006-01-02 15:04"),
+			UnreadCount: unreadCount,
+		})
+	}
+
+	// 2. 查询系统消息和关心消息的未读数
+	var systemUnread, careUnread int64
+	database.DB.Model(&model.ChatMessage{}).
+		Where("receiver_id = ? AND msg_type = 'system' AND is_read = false", userID).
+		Count(&systemUnread)
+	database.DB.Model(&model.ChatMessage{}).
+		Where("receiver_id = ? AND msg_type = 'care' AND is_read = false", userID).
+		Count(&careUnread)
+
+	response.OK(c, gin.H{
+		"sessions":      sessions,
+		"system_unread": systemUnread,
+		"care_unread":   careUnread,
+	})
+}
+
+// GetChatHistory 获取与指定用户的聊天历史记录。
+// GET /api/v1/chat/history?peer_id=xxx&since_id=xxx&page_size=50
+func GetChatHistory(c *gin.Context) {
+	userID := c.GetUint64("user_id")
+	peerIDStr := c.Query("peer_id")
+	sinceIDStr := c.Query("since_id") // 消息 ID (用于游标翻页或断线重连拉取)
+	pageSizeStr := c.DefaultQuery("page_size", "50")
+
+	if peerIDStr == "" {
+		response.BadRequest(c, "缺少 peer_id 参数")
+		return
+	}
+
+	peerID, err := strconv.ParseUint(peerIDStr, 10, 64)
+	if err != nil || peerID == 0 {
+		response.BadRequest(c, "peer_id 参数无效")
+		return
+	}
+	pageSize, _ := strconv.Atoi(pageSizeStr)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	// 【安全】校验当前用户与 peer 存在绑定关系 (防止 IDOR)
+	var relCount int64
+	database.DB.Model(&model.UserRelation{}).Where(
+		"status = 1 AND ((elder_id = ? AND youth_id = ?) OR (elder_id = ? AND youth_id = ?))",
+		userID, peerID, peerID, userID,
+	).Count(&relCount)
+	if relCount == 0 {
+		response.Fail(c, 403, "无权查看与该用户的聊天记录")
+		return
+	}
+
+	// 按 ID 升序拉取增量消息 (用于断线补发重连)
+	query := database.DB.Model(&model.ChatMessage{}).
+		Where("(sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)",
+			userID, peerID, peerID, userID).
+		Order("id ASC")
+
+	if sinceIDStr != "" {
+		sinceID, _ := strconv.ParseUint(sinceIDStr, 10, 64)
+		if sinceID > 0 {
+			query = query.Where("id > ?", sinceID)
+		}
+	}
+
+	var messages []model.ChatMessage
+	query.Limit(pageSize).Find(&messages)
+
+	// 【修复】只标记当前拉取到的消息为已读，而非全部未读
+	if len(messages) > 0 {
+		readIDs := make([]uint64, 0)
+		for _, msg := range messages {
+			if msg.SenderID == peerID && !msg.IsRead {
+				readIDs = append(readIDs, msg.ID)
+			}
+		}
+		if len(readIDs) > 0 {
+			database.DB.Model(&model.ChatMessage{}).
+				Where("id IN ?", readIDs).
+				Update("is_read", true)
+		}
+	}
+
+	response.OK(c, gin.H{
+		"peer_id":  peerID,
+		"total":    len(messages),
+		"messages": messages,
+	})
+}
+
+// AIReply 年轻人端 AI 一键回复建议。
+// POST /api/v1/chat/ai-suggest
+//
+// 根据最近一条父母消息，调用 LLM 生成3-4条15字以内的建议回复。
+func AIReply(c *gin.Context) {
+	userID := c.GetUint64("user_id")
+	peerIDStr := c.Query("peer_id")
+
+	if peerIDStr == "" {
+		response.BadRequest(c, "缺少 peer_id 参数")
+		return
+	}
+	peerID, err := strconv.ParseUint(peerIDStr, 10, 64)
+	if err != nil || peerID == 0 {
+		response.BadRequest(c, "peer_id 参数无效")
+		return
+	}
+
+	// 【安全】校验当前用户与 peer 存在绑定关系 (防止 IDOR)
+	var relCount int64
+	database.DB.Model(&model.UserRelation{}).Where(
+		"status = 1 AND ((elder_id = ? AND youth_id = ?) OR (elder_id = ? AND youth_id = ?))",
+		userID, peerID, peerID, userID,
+	).Count(&relCount)
+	if relCount == 0 {
+		response.Fail(c, 403, "无权获取与该用户的 AI 回复建议")
+		return
+	}
+
+	// 获取对方最近一条消息
+	var lastMsg model.ChatMessage
+	result := database.DB.Where("sender_id = ? AND receiver_id = ?", peerID, userID).
+		Order("created_at DESC").First(&lastMsg)
+
+	if result.RowsAffected == 0 {
+		response.Fail(c, 3001, "暂无父母消息")
+		return
+	}
+
+	// TODO: 对语音类型消息先调 STT 转文字
+	// TODO: 调用 LLM API 生成建议回复
+
+	// 兜底规则引擎 (当 LLM 不可用时)
+	suggestions := generateFallbackReplies(lastMsg.Content, lastMsg.MsgType)
+
+	response.OK(c, gin.H{
+		"original_msg": lastMsg.Content,
+		"msg_type":     lastMsg.MsgType,
+		"suggestions":  suggestions,
+	})
+}
+
+// STTConvert 语音转文字接口。
+// POST /api/v1/chat/stt
+//
+// 接收语音文件 URL 或二进制流，返回转录文本。
+func STTConvert(c *gin.Context) {
+	voiceURL := c.PostForm("voice_url")
+	if voiceURL == "" {
+		response.BadRequest(c, "缺少语音文件")
+		return
+	}
+
+	// TODO: 集成阿里云/腾讯云 STT SDK
+	// 临时伪实现
+	response.OK(c, gin.H{
+		"text":   "【语音转写功能对接中】",
+		"status": "pending",
+	})
+}
+
+// ==================== 工具函数 ====================
+
+// containsKeyword 判断字符串是否包含关键字 (unicode 安全)。
+func containsKeyword(s, keyword string) bool {
+	return len(s) > 0 && len(keyword) > 0 &&
+		(len(s) >= len(keyword)) &&
+		(s == keyword || contains(s, keyword))
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// generateFallbackReplies LLM 不可用时的兜底回复建议。
+func generateFallbackReplies(content, msgType string) []string {
+	replies := []string{
+		"收到啦，妈~",
+		"好的，我知道了",
+		"谢谢关心，我这边都好",
+	}
+
+	// 简单的关键字匹配生成更贴切的回复
+	if msgType == "voice" {
+		replies = append(replies, "语音收到了，等会儿回~")
+	}
+
+	return replies
+}
