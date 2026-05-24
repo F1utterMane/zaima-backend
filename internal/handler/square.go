@@ -32,6 +32,18 @@ type MatchConfirmReq struct {
 	BubbleID uint64 `json:"bubble_id" binding:"required"`
 }
 
+// ==================== 响应体定义 ====================
+
+// SquareUserInfo 广场用户信息（带兴趣标签）。
+type SquareUserInfo struct {
+	UserID    uint64   `json:"user_id"`
+	Nickname  string   `json:"nickname"`
+	AvatarURL string   `json:"avatar_url"`
+	City      string   `json:"city"`
+	Province  string   `json:"province"`
+	Interests []string `json:"interests"` // 兴趣标签列表
+}
+
 // ==================== Handler ====================
 
 // PublishBubble 发布广场气泡。
@@ -208,4 +220,96 @@ func MatchConfirm(c *gin.Context) {
 	// 发送 { type: "match_ended", bubble_id: xxx, message: "对方已找到玩伴，聊天结束" }
 
 	response.OKWithMsg(c, "匹配成功，气泡已消失", nil)
+}
+
+// GetSquareUsers 获取广场用户列表（带兴趣标签）。
+// GET /api/v1/square/users?keyword=xxx&interest=xxx&page=1&page_size=20
+//
+// 返回所有有活跃气泡或满足过滤条件的用户，包含头像和兴趣标签。
+func GetSquareUsers(c *gin.Context) {
+	keyword := c.Query("keyword")           // 用户昵称搜索
+	interestTag := c.Query("interest")      // 兴趣标签过滤
+	pageStr := c.DefaultQuery("page", "1")
+	pageSizeStr := c.DefaultQuery("page_size", "20")
+
+	page, _ := strconv.Atoi(pageStr)
+	pageSize, _ := strconv.Atoi(pageSizeStr)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	offset := (page - 1) * pageSize
+
+	// 1. 查询所有有活跃气泡的用户
+	type userBubbleInfo struct {
+		UserID uint64
+	}
+	var userIDs []userBubbleInfo
+	query := database.DB.Model(&model.SquareBubble{}).
+		Select("DISTINCT user_id").
+		Where("status = 1 AND expire_at > ?", time.Now())
+
+	if interestTag != "" {
+		query = query.Where("interest_tag = ?", interestTag)
+	}
+
+	query.Scan(&userIDs)
+
+	if len(userIDs) == 0 {
+		response.OK(c, gin.H{
+			"total": 0,
+			"users": []interface{}{},
+		})
+		return
+	}
+
+	// 提取用户ID列表
+	uidList := make([]uint64, len(userIDs))
+	for i, info := range userIDs {
+		uidList[i] = info.UserID
+	}
+
+	// 2. 批量查询用户信息
+	var users []model.User
+	userQuery := database.DB.Where("id IN ?", uidList)
+	if keyword != "" {
+		userQuery = userQuery.Where("nickname LIKE ?", "%"+keyword+"%")
+	}
+	userQuery.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&users)
+
+	// 3. 为每个用户查询兴趣标签
+	result := make([]SquareUserInfo, 0, len(users))
+	for _, user := range users {
+		var interests []model.UserInterest
+		database.DB.Where("user_id = ?", user.ID).Find(&interests)
+		tags := make([]string, len(interests))
+		for i, item := range interests {
+			tags[i] = item.InterestTag
+		}
+
+		result = append(result, SquareUserInfo{
+			UserID:    user.ID,
+			Nickname:  user.Nickname,
+			AvatarURL: user.AvatarURL,
+			City:      user.City,
+			Province:  user.Province,
+			Interests: tags,
+		})
+	}
+
+	// 计算总数
+	var total int64
+	database.DB.Model(&model.SquareBubble{}).
+		Select("COUNT(DISTINCT user_id)").
+		Where("status = 1 AND expire_at > ?", time.Now()).
+		Scan(&total)
+
+	response.OK(c, gin.H{
+		"total": total,
+		"page":  page,
+		"users": result,
+	})
 }

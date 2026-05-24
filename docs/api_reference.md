@@ -76,7 +76,8 @@
     "nickname": "张大爷", // 必须<=8字
     "avatar_url": "https://zaima.oss.aliyuncs.com/avatar.jpg", // ⚠️ 必须为合法的 HTTPS OSS 链接
     "city": "武汉",
-    "province": "湖北"
+    "province": "湖北",
+    "interests": ["广场舞", "下棋"]  // (可选) 最多3个兴趣标签
   }
   ```
 
@@ -178,20 +179,76 @@
   ```
 - **说明**: 成功匹配后气泡消失，服务端通过 WebSocket 通知其他在等待的请求者。
 
+### 4.4 获取广场用户列表 (带兴趣标签)
+- **URL**: `/square/users?keyword=xxx&interest=xxx&page=1&page_size=20`
+- **Method**: `GET`
+- **说明**: 
+  - 返回所有有活跃气泡的用户列表，包含头像和兴趣标签
+  - 支持按昵称关键字搜索和兴趣标签过滤
+  - 支持分页
+  - **Response**:
+    ```json
+    {
+      "code": 0,
+      "message": "success",
+      "data": {
+        "total": 15,
+        "page": 1,
+        "users": [
+          {
+            "user_id": 123,
+            "nickname": "大爷1",
+            "avatar_url": "https://zaima.oss.aliyuncs.com/avatar1.jpg",
+            "city": "武汉",
+            "province": "湖北",
+            "interests": ["广场舞", "下棋"]
+          }
+        ]
+      }
+    }
+    ```
+
 ---
 
-## 5. 辅助与工具接口
+## 5. 文件与多媒体服务 (OSS)
 
-### 5.1 获取天气信息
+### 5.1 获取 OSS 上传授权令牌 (STS 直传)
+- **URL**: `/oss/token`
+- **Method**: `GET`
+- **鉴权**: 需要
+- **说明**: 获取直传授权，前端通过返回的凭证直接上传文件到 OSS，避免文件流量经过服务端。
+- **Response**:
+  ```json
+  {
+    "code": 0,
+    "message": "success",
+    "data": {
+      "access_key_id": "xxx",
+      "access_key_secret": "xxx",
+      "bucket_name": "zaima",
+      "endpoint": "https://zaima.oss.aliyuncs.com",
+      "expiration": "2026-03-05T10:00:00Z",
+      "dir": "uploads/users/123/",
+      "signature": "xxx",
+      "policy": "xxx"
+    }
+  }
+  ```
+
+---
+
+## 6. 辅助与工具接口
+
+### 6.1 获取天气信息
 - **URL**: `/weather?city=武汉`
 - **Method**: `GET`
 
-### 5.2 获取 AI 关怀卡片
+### 6.2 获取 AI 关怀卡片
 - **URL**: `/weather/care-cards?city=武汉`
 - **Method**: `GET`
 - **说明**: 返回贴合当前时间段和天气的短句及 Icon，用于聊天列表置顶展示。
 
-### 5.3 获取新闻列表
+### 6.3 获取新闻列表
 - **URL**: `/news?city=武汉&tab=latest&keyword=搜索词&page=1&page_size=10`
 - **Method**: `GET`
 - **说明**: 
@@ -201,26 +258,40 @@
 
 ---
 
-## 6. 聊天模块 (Chat REST)
+## 7. 聊天模块 (Chat REST)
 
-### 6.1 获取会话列表 (首屏)
+### 7.1 创建聊天（发起第一次对话）
+- **URL**: `/chat/create`
+- **Method**: `POST`
+- **Body**:
+  ```json
+  {
+    "peer_id": 456  // 对方用户ID
+  }
+  ```
+- **说明**: 
+  - 发起与对方的第一次聊天
+  - 前置条件：必须存在绑定关系（status=1）
+  - 返回状态：`created` (新建) 或 `existing` (已存在)
+
+### 7.2 获取会话列表 (首屏)
 - **URL**: `/chat/sessions?keyword=xxx`
 - **Method**: `GET`
 - **Response**: 返回所有最近聊天的对象、系统消息、未读数量及最后一条消息内容的摘要。
 
-### 6.2 获取聊天记录
+### 7.3 获取聊天记录
 - **URL**: `/chat/history?peer_id=456&since_id=100021&page_size=50`
 - **Method**: `GET`
 - **说明**: 
   - 通过 `since_id` 传递上次拉取的最后一条 `MessageID` 以获取断网期间丢失的消息。
   - 获取后会自动将对方离线发送的消息标为已读。
 
-### 6.3 AI 一键回复建议 (年轻人端)
+### 7.4 AI 一键回复建议 (年轻人端)
 - **URL**: `/chat/ai-suggest?peer_id=456`
 - **Method**: `POST`
 - **说明**: 结合最近的聊天上下文（通过大模型或规则引擎）分析，返回建议的破冰回复。
 
-### 6.4 发送端语音转文字 (长辈端 STT)
+### 7.5 发送端语音转文字 (长辈端 STT)
 - **URL**: `/chat/stt`
 - **Method**: `POST`
 - **Body Header**: `Content-Type: application/x-www-form-urlencoded`

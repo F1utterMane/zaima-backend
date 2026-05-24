@@ -1,4 +1,4 @@
-// Package handler - 聊天相关 API (REST 部分): 会话列表、历史消息、AI回复、STT。
+// Package handler - 聊天相关 API (REST 部分): 会话列表、历史消息、AI回复、STT、创建聊天。
 package handler
 
 import (
@@ -10,6 +10,13 @@ import (
 	"zaima-backend/internal/pkg/database"
 	"zaima-backend/internal/pkg/response"
 )
+
+// ==================== 请求体定义 ====================
+
+// CreateChatReq 创建聊天（发起第一次对话）请求。
+type CreateChatReq struct {
+	PeerID uint64 `json:"peer_id" binding:"required"` // 对方用户ID
+}
 
 // ==================== 响应体定义 ====================
 
@@ -25,6 +32,83 @@ type ChatSession struct {
 }
 
 // ==================== Handler ====================
+
+// CreateChat 发起第一次对话（创建聊天）。
+// POST /api/v1/chat/create
+//
+// 流程：校验用户关系 -> 检查是否已存在会话 -> 创建初始消息 -> 返回对方信息。
+func CreateChat(c *gin.Context) {
+	userID := c.GetUint64("user_id")
+
+	var req CreateChatReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "缺少对方用户ID")
+		return
+	}
+
+	if req.PeerID == userID {
+		response.Fail(c, 4001, "不能与自己聊天")
+		return
+	}
+
+	// 校验对方用户是否存在
+	var peer model.User
+	if err := database.DB.First(&peer, req.PeerID).Error; err != nil {
+		response.Fail(c, 4002, "用户不存在")
+		return
+	}
+
+	// 校验是否存在绑定关系
+	var relCount int64
+	database.DB.Model(&model.UserRelation{}).Where(
+		"status = 1 AND ((elder_id = ? AND youth_id = ?) OR (elder_id = ? AND youth_id = ?))",
+		userID, req.PeerID, req.PeerID, userID,
+	).Count(&relCount)
+	if relCount == 0 {
+		response.Fail(c, 4003, "必须先建立亲子绑定关系才能聊天")
+		return
+	}
+
+	// 检查是否已存在聊天记录 (防止重复创建)
+	var msgCount int64
+	database.DB.Model(&model.ChatMessage{}).Where(
+		"(sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)",
+		userID, req.PeerID, req.PeerID, userID,
+	).Count(&msgCount)
+
+	// 如果已存在聊天记录，直接返回对方信息 (幂等性)
+	if msgCount > 0 {
+		response.OK(c, gin.H{
+			"peer_id":     peer.ID,
+			"peer_name":   peer.Nickname,
+			"peer_avatar": peer.AvatarURL,
+			"status":      "existing",
+			"message":     "聊天已存在",
+		})
+		return
+	}
+
+	// 创建初始化聊天标记消息（可选）
+	initMsg := model.ChatMessage{
+		SenderID:   userID,
+		ReceiverID: req.PeerID,
+		MsgType:    "system",
+		Content:    "聊天已建立",
+		IsRead:     true,
+	}
+	if err := database.DB.Create(&initMsg).Error; err != nil {
+		response.ServerError(c, "创建聊天失败")
+		return
+	}
+
+	response.OK(c, gin.H{
+		"peer_id":     peer.ID,
+		"peer_name":   peer.Nickname,
+		"peer_avatar": peer.AvatarURL,
+		"status":      "created",
+		"message":     "聊天已建立",
+	})
+}
 
 // GetChatSessions 获取聊天会话列表 (首屏)。
 // GET /api/v1/chat/sessions?keyword=xxx

@@ -93,6 +93,7 @@ func SetupRouter(hub *ws.Hub) *gin.Engine {
 	{
 		square.POST("/publish", handler.PublishBubble)      // 发布气泡
 		square.GET("/bubbles", handler.GetBubbles)          // 获取气泡列表
+		square.GET("/users", handler.GetSquareUsers)        // 获取广场用户列表
 		square.POST("/match-confirm", handler.MatchConfirm) // 确认匹配
 	}
 
@@ -109,10 +110,17 @@ func SetupRouter(hub *ws.Hub) *gin.Engine {
 	// --- 聊天 REST 模块 ---
 	chat := authorized.Group("/chat")
 	{
+		chat.POST("/create", handler.CreateChat)    // 创建聊天（发起第一次对话）
 		chat.GET("/sessions", handler.GetChatSessions) // 会话列表
 		chat.GET("/history", handler.GetChatHistory)   // 聊天历史
 		chat.POST("/ai-suggest", handler.AIReply)      // AI回复建议
 		chat.POST("/stt", handler.STTConvert)          // 语音转文字
+	}
+
+	// --- OSS 文件上传授权 ---
+	oss := authorized.Group("/oss")
+	{
+		oss.GET("/token", handler.GetOSSToken) // 获取 OSS 上传授权令牌
 	}
 
 	return r

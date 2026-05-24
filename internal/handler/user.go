@@ -16,10 +16,11 @@ import (
 
 // UpdateProfileReq 更新用户资料请求。
 type UpdateProfileReq struct {
-	Nickname  string `json:"nickname"`   // 昵称 (≤8字)
-	AvatarURL string `json:"avatar_url"` // 头像 OSS URL
-	City      string `json:"city"`       // 所在城市
-	Province  string `json:"province"`   // 所在省份
+	Nickname  string   `json:"nickname"`   // 昵称 (≤8字)
+	AvatarURL string   `json:"avatar_url"` // 头像 OSS URL
+	City      string   `json:"city"`       // 所在城市
+	Province  string   `json:"province"`   // 所在省份
+	Interests []string `json:"interests"`  // 兴趣标签 (最多3个，可选)
 }
 
 // BindReq 亲子绑定请求。
@@ -76,7 +77,7 @@ func GetProfile(c *gin.Context) {
 	})
 }
 
-// UpdateProfile 更新用户资料 (昵称、头像、城市等)。
+// UpdateProfile 更新用户资料 (昵称、头像、城市、兴趣等)。
 // PUT /api/v1/user/profile
 func UpdateProfile(c *gin.Context) {
 	userID := c.GetUint64("user_id")
@@ -88,8 +89,14 @@ func UpdateProfile(c *gin.Context) {
 	}
 
 	// 昵称长度校验 (≤8个 UTF-8 字符)
-	if len([]rune(req.Nickname)) > 8 {
+	if req.Nickname != "" && len([]rune(req.Nickname)) > 8 {
 		response.Fail(c, 1003, "昵称不可多于8字")
+		return
+	}
+
+	// 兴趣标签校验 (最多3个)
+	if len(req.Interests) > 3 {
+		response.Fail(c, 1006, "最多选择3个兴趣标签")
 		return
 	}
 
@@ -111,8 +118,36 @@ func UpdateProfile(c *gin.Context) {
 		updates["province"] = req.Province
 	}
 
-	if len(updates) > 0 {
-		database.DB.Model(&model.User{}).Where("id = ?", userID).Updates(updates)
+	// 使用事务包裹更新，确保用户资料和兴趣标签一致性
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// 更新用户基本信息
+		if len(updates) > 0 {
+			if err := tx.Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+
+		// 如果提供了兴趣标签，则更新
+		if len(req.Interests) > 0 {
+			// 删除旧标签
+			if err := tx.Where("user_id = ?", userID).Delete(&model.UserInterest{}).Error; err != nil {
+				return err
+			}
+			// 批量插入新标签
+			interests := make([]model.UserInterest, len(req.Interests))
+			for i, tag := range req.Interests {
+				interests[i] = model.UserInterest{UserID: userID, InterestTag: tag}
+			}
+			if err := tx.Create(&interests).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		response.ServerError(c, "资料更新失败")
+		return
 	}
 
 	response.OKWithMsg(c, "资料已更新", nil)
