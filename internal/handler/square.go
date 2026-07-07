@@ -227,8 +227,8 @@ func MatchConfirm(c *gin.Context) {
 //
 // 返回所有有活跃气泡或满足过滤条件的用户，包含头像和兴趣标签。
 func GetSquareUsers(c *gin.Context) {
-	keyword := c.Query("keyword")           // 用户昵称搜索
-	interestTag := c.Query("interest")      // 兴趣标签过滤
+	keyword := c.Query("keyword")      // 用户昵称搜索
+	interestTag := c.Query("interest") // 兴趣标签过滤
 	pageStr := c.DefaultQuery("page", "1")
 	pageSizeStr := c.DefaultQuery("page_size", "20")
 
@@ -237,44 +237,36 @@ func GetSquareUsers(c *gin.Context) {
 	if page < 1 {
 		page = 1
 	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
 	if pageSize > 100 {
 		pageSize = 100
 	}
 
 	offset := (page - 1) * pageSize
+	now := time.Now()
 
-	// 1. 查询所有有活跃气泡的用户
-	type userBubbleInfo struct {
-		UserID uint64
-	}
-	var userIDs []userBubbleInfo
-	query := database.DB.Model(&model.SquareBubble{}).
-		Select("DISTINCT user_id").
-		Where("status = 1 AND expire_at > ?", time.Now())
-
+	// 1. 先圈定所有有活跃气泡的用户，兴趣可匹配气泡标签或用户资料标签。
+	activeUserSubQuery := database.DB.Model(&model.SquareBubble{}).
+		Select("DISTINCT square_bubbles.user_id").
+		Where("square_bubbles.status = 1 AND square_bubbles.expire_at > ?", now)
 	if interestTag != "" {
-		query = query.Where("interest_tag = ?", interestTag)
+		activeUserSubQuery = activeUserSubQuery.
+			Joins("LEFT JOIN user_interests ON user_interests.user_id = square_bubbles.user_id AND user_interests.status = 1").
+			Where("(square_bubbles.interest_tag = ? OR user_interests.interest_tag = ?)", interestTag, interestTag)
 	}
 
-	query.Scan(&userIDs)
-
-	if len(userIDs) == 0 {
-		response.OK(c, gin.H{
-			"total": 0,
-			"users": []interface{}{},
-		})
-		return
+	// 2. 查询用户信息并统计过滤后的总数
+	var total int64
+	countQuery := database.DB.Model(&model.User{}).Where("id IN (?)", activeUserSubQuery)
+	if keyword != "" {
+		countQuery = countQuery.Where("nickname LIKE ?", "%"+keyword+"%")
 	}
+	countQuery.Count(&total)
 
-	// 提取用户ID列表
-	uidList := make([]uint64, len(userIDs))
-	for i, info := range userIDs {
-		uidList[i] = info.UserID
-	}
-
-	// 2. 批量查询用户信息
 	var users []model.User
-	userQuery := database.DB.Where("id IN ?", uidList)
+	userQuery := database.DB.Where("id IN (?)", activeUserSubQuery)
 	if keyword != "" {
 		userQuery = userQuery.Where("nickname LIKE ?", "%"+keyword+"%")
 	}
@@ -284,7 +276,7 @@ func GetSquareUsers(c *gin.Context) {
 	result := make([]SquareUserInfo, 0, len(users))
 	for _, user := range users {
 		var interests []model.UserInterest
-		database.DB.Where("user_id = ?", user.ID).Find(&interests)
+		database.DB.Where("user_id = ? AND status = 1", user.ID).Order("id ASC").Find(&interests)
 		tags := make([]string, len(interests))
 		for i, item := range interests {
 			tags[i] = item.InterestTag
@@ -299,13 +291,6 @@ func GetSquareUsers(c *gin.Context) {
 			Interests: tags,
 		})
 	}
-
-	// 计算总数
-	var total int64
-	database.DB.Model(&model.SquareBubble{}).
-		Select("COUNT(DISTINCT user_id)").
-		Where("status = 1 AND expire_at > ?", time.Now()).
-		Scan(&total)
 
 	response.OK(c, gin.H{
 		"total": total,

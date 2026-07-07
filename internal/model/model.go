@@ -47,6 +47,7 @@ type UserInterest struct {
 	ID          uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	UserID      uint64    `gorm:"index;not null" json:"user_id"`
 	InterestTag string    `gorm:"type:varchar(32);not null;comment:兴趣标签如棋牌、广场舞" json:"interest_tag"`
+	Status      int       `gorm:"type:smallint;default:1;index;comment:1=有效,0=历史" json:"status"`
 	CreatedAt   time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 

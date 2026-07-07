@@ -102,8 +102,27 @@ func TestUpdateInterests_Success(t *testing.T) {
 
 	// 验证数据库
 	var interests []model.UserInterest
-	database.DB.Where("user_id = ?", uid).Find(&interests)
+	database.DB.Where("user_id = ? AND status = 1", uid).Find(&interests)
 	assert.Len(t, interests, 2)
+
+	// 再次更新时不删除历史记录，只将旧标签置为历史并插入新标签
+	body = `{"tags":["太极拳"]}`
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("PUT", "/api/v1/user/interests", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var allRows int64
+	database.DB.Model(&model.UserInterest{}).Where("user_id = ?", uid).Count(&allRows)
+	assert.Equal(t, int64(3), allRows, "历史兴趣记录不应被删除")
+
+	var active []model.UserInterest
+	database.DB.Where("user_id = ? AND status = 1", uid).Find(&active)
+	assert.Len(t, active, 1)
+	assert.Equal(t, "太极拳", active[0].InterestTag)
 }
 
 // TestUpdateInterests_TooMany 验证超过3个兴趣标签被拒。

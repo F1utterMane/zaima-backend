@@ -125,6 +125,60 @@ func TestGetBubbles_WithCityFilter(t *testing.T) {
 	assert.GreaterOrEqual(t, total, 1, "城市筛选应返回武汉的气泡")
 }
 
+// TestGetSquareUsers_FilterByInterest 验证广场用户列表按兴趣筛选并返回用户兴趣标签。
+func TestGetSquareUsers_FilterByInterest(t *testing.T) {
+	r := SetupTestRouter()
+	uid := SeedElderUser(database.DB)
+	token := GetTestToken(uid, 1)
+
+	other := model.User{
+		Phone:    "13900000003",
+		Role:     1,
+		Nickname: "钱奶奶",
+		City:     "武汉",
+		Province: "湖北",
+	}
+	database.DB.Create(&other)
+
+	database.DB.Create(&model.UserInterest{UserID: uid, InterestTag: "太极拳", Status: 1})
+	database.DB.Create(&model.UserInterest{UserID: other.ID, InterestTag: "下棋", Status: 1})
+
+	database.DB.Create(&model.SquareBubble{
+		UserID:      uid,
+		Nickname:    "张大爷",
+		VoiceURL:    "https://oss/v.mp3",
+		InterestTag: "太极拳",
+		Status:      1,
+		ExpireAt:    time.Now().Add(4 * time.Hour),
+	})
+	database.DB.Create(&model.SquareBubble{
+		UserID:      other.ID,
+		Nickname:    "钱奶奶",
+		VoiceURL:    "https://oss/v2.mp3",
+		InterestTag: "下棋",
+		Status:      1,
+		ExpireAt:    time.Now().Add(4 * time.Hour),
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/square/users?interest=太极拳&page=1&page_size=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	data := resp["data"].(map[string]interface{})
+	assert.Equal(t, 1, int(data["total"].(float64)))
+
+	users := data["users"].([]interface{})
+	require.Len(t, users, 1)
+	user := users[0].(map[string]interface{})
+	assert.Equal(t, "张大爷", user["nickname"])
+	assert.Contains(t, fmt.Sprint(user["interests"]), "太极拳")
+}
+
 // TestMatchConfirm_Success 验证正常匹配确认。
 func TestMatchConfirm_Success(t *testing.T) {
 	r := SetupTestRouter()

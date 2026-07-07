@@ -337,6 +337,12 @@ func TestR2_SSRF_AvatarURL(t *testing.T) {
 		"avatar_url": "https://zaima-bucket.oss.aliyuncs.com/avatar/test.jpg",
 	})
 	assert.Equal(t, http.StatusOK, w.Code)
+
+	// 第三方 HTTPS 图床地址应通过，便于头像先接第三方资源
+	w = e2eRequest(r, "PUT", "/api/v1/user/profile", token, map[string]string{
+		"avatar_url": "https://images.unsplash.com/avatar/test.jpg",
+	})
+	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 // TestR2_SSRF_VoiceURL 验证非 OSS URL 的语音被拒绝。

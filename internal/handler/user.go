@@ -2,6 +2,8 @@
 package handler
 
 import (
+	"net"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -16,11 +18,11 @@ import (
 
 // UpdateProfileReq 更新用户资料请求。
 type UpdateProfileReq struct {
-	Nickname  string   `json:"nickname"`   // 昵称 (≤8字)
-	AvatarURL string   `json:"avatar_url"` // 头像 OSS URL
-	City      string   `json:"city"`       // 所在城市
-	Province  string   `json:"province"`   // 所在省份
-	Interests []string `json:"interests"`  // 兴趣标签 (最多3个，可选)
+	Nickname  string    `json:"nickname"`   // 昵称 (≤8字)
+	AvatarURL string    `json:"avatar_url"` // 头像 HTTPS URL
+	City      string    `json:"city"`       // 所在城市
+	Province  string    `json:"province"`   // 所在省份
+	Interests *[]string `json:"interests"`  // 兴趣标签 (最多3个，可选)
 }
 
 // BindReq 亲子绑定请求。
@@ -64,7 +66,7 @@ func GetProfile(c *gin.Context) {
 
 	// 查询兴趣标签
 	var interests []model.UserInterest
-	database.DB.Where("user_id = ?", userID).Find(&interests)
+	database.DB.Where("user_id = ? AND status = 1", userID).Order("id ASC").Find(&interests)
 	tags := make([]string, len(interests))
 	for i, item := range interests {
 		tags[i] = item.InterestTag
@@ -95,7 +97,7 @@ func UpdateProfile(c *gin.Context) {
 	}
 
 	// 兴趣标签校验 (最多3个)
-	if len(req.Interests) > 3 {
+	if req.Interests != nil && len(*req.Interests) > 3 {
 		response.Fail(c, 1006, "最多选择3个兴趣标签")
 		return
 	}
@@ -105,8 +107,8 @@ func UpdateProfile(c *gin.Context) {
 		updates["nickname"] = req.Nickname
 	}
 	if req.AvatarURL != "" {
-		if !isValidOSSURL(req.AvatarURL) {
-			response.BadRequest(c, "头像 URL 不合法，仅允许 OSS 地址")
+		if !isValidAvatarURL(req.AvatarURL) {
+			response.BadRequest(c, "头像 URL 不合法，仅允许 HTTPS 地址")
 			return
 		}
 		updates["avatar_url"] = req.AvatarURL
@@ -128,17 +130,8 @@ func UpdateProfile(c *gin.Context) {
 		}
 
 		// 如果提供了兴趣标签，则更新
-		if len(req.Interests) > 0 {
-			// 删除旧标签
-			if err := tx.Where("user_id = ?", userID).Delete(&model.UserInterest{}).Error; err != nil {
-				return err
-			}
-			// 批量插入新标签
-			interests := make([]model.UserInterest, len(req.Interests))
-			for i, tag := range req.Interests {
-				interests[i] = model.UserInterest{UserID: userID, InterestTag: tag}
-			}
-			if err := tx.Create(&interests).Error; err != nil {
+		if req.Interests != nil {
+			if err := replaceActiveInterests(tx, userID, *req.Interests); err != nil {
 				return err
 			}
 		}
@@ -276,23 +269,9 @@ func UpdateInterests(c *gin.Context) {
 		return
 	}
 
-	// 使用事务包裹删除+批量插入，确保数据一致性
+	// 使用事务包裹失效旧标签+批量插入，确保数据一致性
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		// 删除旧标签
-		if err := tx.Where("user_id = ?", userID).Delete(&model.UserInterest{}).Error; err != nil {
-			return err
-		}
-		// 批量插入新标签
-		interests := make([]model.UserInterest, len(req.Tags))
-		for i, tag := range req.Tags {
-			interests[i] = model.UserInterest{UserID: userID, InterestTag: tag}
-		}
-		if len(interests) > 0 {
-			if err := tx.Create(&interests).Error; err != nil {
-				return err
-			}
-		}
-		return nil
+		return replaceActiveInterests(tx, userID, req.Tags)
 	})
 	if err != nil {
 		response.ServerError(c, "兴趣标签更新失败")
@@ -303,6 +282,42 @@ func UpdateInterests(c *gin.Context) {
 }
 
 // ==================== 工具函数 ====================
+
+func replaceActiveInterests(tx *gorm.DB, userID uint64, tags []string) error {
+	if err := tx.Model(&model.UserInterest{}).
+		Where("user_id = ? AND status = 1", userID).
+		Update("status", 0).Error; err != nil {
+		return err
+	}
+
+	interests := make([]model.UserInterest, len(tags))
+	for i, tag := range tags {
+		interests[i] = model.UserInterest{
+			UserID:      userID,
+			InterestTag: tag,
+			Status:      1,
+		}
+	}
+	if len(interests) == 0 {
+		return nil
+	}
+	return tx.Create(&interests).Error
+}
+
+func isValidAvatarURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if parsed.Scheme != "https" || host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil {
+		return false
+	}
+	return strings.Contains(host, ".")
+}
 
 // isValidOSSURL 校验 URL 是否为合法的 OSS 地址 (防止 SSRF)。
 // 生产环境中应限制为具体的 OSS 域名白名单。
